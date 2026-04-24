@@ -98,6 +98,8 @@ DATE_MAP = {
     "5728-c6865d81": "2026-04-22",
     # avril 2026
     "5732-c9277c52": "2026-04-23",
+    # avril 2026
+    "5742-68be1c03": "2026-04-24",
 }
 
 SORTED_BUILDS = sorted(DATE_MAP, key=lambda b: int(b.split("-")[0]))
@@ -203,7 +205,7 @@ def load_stat_platform(prefix):
 def chart_per_test_overview():
     """3-panel timeline — total run duration per platform."""
     fig, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=False)
-    fig.suptitle("HEC Nightly Run Duration  ·  Jan 1 - avr. 22, 2026",
+    fig.suptitle("HEC Nightly Run Duration  ·  Jan 1 - avr. 24, 2026",
                  fontsize=15, fontweight="bold", y=0.99)
 
     for ax, (pname, (prefix, color)) in zip(axes, STAT_PLATFORMS.items()):

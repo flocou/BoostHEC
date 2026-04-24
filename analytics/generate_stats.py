@@ -83,6 +83,8 @@ DATE_MAP = {
     "5728-c6865d81": "2026-04-22",
     # avril 2026
     "5732-c9277c52": "2026-04-23",
+    # avril 2026
+    "5742-68be1c03": "2026-04-24",
 }
 
 
@@ -289,7 +291,7 @@ def generate_html(all_platform_data):
 <body>
 <div class="container">
     <h1>HEC Per-Test Duration Statistics</h1>
-    <p>Jan 1 to avr. 22, 2026 - All Platforms</p>
+    <p>Jan 1 to avr. 24, 2026 - All Platforms</p>
 
     <div class="tab-bar">
 """

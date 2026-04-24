@@ -137,6 +137,8 @@ DATE_MAP = {
     "5728-c6865d81": "2026-04-22",
     # avril 2026
     "5732-c9277c52": "2026-04-23",
+    # avril 2026
+    "5742-68be1c03": "2026-04-24",
 }
 
 
@@ -430,7 +432,7 @@ def generate_html(all_data, filelists):
   </div>
   <div class="main">
     <h1>HEC Per-Filelist Detailed Test Durations</h1>
-    <p>Jan 1 to avr. 22, 2026 &mdash; Per-file durations within each filelist, across platforms.
+    <p>Jan 1 to avr. 24, 2026 &mdash; Per-file durations within each filelist, across platforms.
        Top 25 slowest tests shown per filelist/platform.</p>
 """
 

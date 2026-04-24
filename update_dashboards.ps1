@@ -73,7 +73,7 @@ if ($Register) {
 }
 
 # ── Logging helpers ────────────────────────────────────────────────────────
-function Write-Step($n, $msg) { Write-Host "`n=== $n/7  $msg ===" -ForegroundColor Cyan }
+function Write-Step($n, $msg) { Write-Host "`n=== $n/6  $msg ===" -ForegroundColor Cyan }
 function Write-OK($msg)       { Write-Host "  [ok]   $msg" -ForegroundColor Green }
 function Write-Info($msg)     { Write-Host "  $msg"  -ForegroundColor Gray }
 function Write-Warn($msg)     { Write-Host "  [warn] $msg" -ForegroundColor Yellow }
@@ -91,8 +91,7 @@ $Platforms = @(
 
 $AnalyticsScripts = @(
     "analytics\generate_stats.py",
-    "analytics\generate_filelist_stats.py",
-    "analytics\generate_pngs.py"
+    "analytics\generate_filelist_stats.py"
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -116,7 +115,7 @@ $lastBuildNum = ($knownIds |
 Write-Info "$($knownIds.Count) known builds; last build number: $lastBuildNum"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2  Scan NAS for new build directories
+# 2  Scan NAS for new build directories and known builds with missing reports
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Step 2 "Scanning NAS: $NasDir"
 
@@ -131,14 +130,36 @@ $newBuilds = @(
     Sort-Object   { [int]($_.Name -split '-')[0] }
 )
 
-if ($newBuilds.Count -eq 0) {
-    Write-Info "No new builds found — dashboards are already current."
+# Known builds (already in DATE_MAP) whose reports are missing from StatsDir
+$rechecks = @(
+    $knownIds | ForEach-Object {
+        $id = $_
+        $anyMissing = $Platforms | Where-Object {
+            -not (Test-Path (Join-Path $StatsDir "${_}_${id}.html"))
+        }
+        if ($anyMissing) {
+            $nasPath = Join-Path $NasDir $id
+            if (Test-Path $nasPath) { Get-Item $nasPath }
+        }
+    } | Where-Object { $_ }
+)
+
+if ($newBuilds.Count -eq 0 -and $rechecks.Count -eq 0) {
+    Write-Info "No new builds and no missing reports — dashboards are already current."
     exit 0
 }
 
-Write-Info "$($newBuilds.Count) new build(s):"
-$newBuilds | ForEach-Object {
-    Write-Info "    $($_.Name)    $($_.LastWriteTime.ToString('yyyy-MM-dd'))"
+if ($newBuilds.Count -gt 0) {
+    Write-Info "$($newBuilds.Count) new build(s):"
+    $newBuilds | ForEach-Object {
+        Write-Info "    $($_.Name)    $($_.LastWriteTime.ToString('yyyy-MM-dd'))"
+    }
+}
+if ($rechecks.Count -gt 0) {
+    Write-Info "$($rechecks.Count) known build(s) with missing reports:"
+    $rechecks | ForEach-Object {
+        Write-Info "    $($_.Name)    (reports incomplete in $StatsDir)"
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -147,7 +168,7 @@ $newBuilds | ForEach-Object {
 Write-Step 3 "Copying HTML reports -> $StatsDir"
 
 $copied = 0
-foreach ($build in $newBuilds) {
+foreach ($build in @($newBuilds) + @($rechecks)) {
     foreach ($plat in $Platforms) {
         $src = Join-Path $build.FullName "$plat.html"
         $dst = Join-Path $StatsDir "${plat}_$($build.Name).html"
@@ -161,85 +182,85 @@ foreach ($build in $newBuilds) {
 Write-OK "Copied $copied file(s)"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4  Patch DATE_MAP + date-range labels in all three analytics scripts
+# 4  Patch DATE_MAP + date-range labels in all analytics scripts (new builds only)
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Step 4 "Patching DATE_MAP in analytics scripts"
 
-# Build new entry lines, with a month-comment whenever the month changes
-$entryLines = [System.Collections.Generic.List[string]]::new()
-$curMonth   = ""
-foreach ($build in $newBuilds) {
-    $date  = $build.LastWriteTime.ToString("yyyy-MM-dd")
-    $month = $build.LastWriteTime.ToString("MMMM yyyy")   # "April 2026"
-    if ($month -ne $curMonth) {
-        $entryLines.Add("    # $month")
-        $curMonth = $month
-    }
-    $entryLines.Add("    `"$($build.Name)`": `"$date`",")
-}
-
-# Labels derived from the last new build
-$last          = $newBuilds[-1]
-$lastDateFull  = $last.LastWriteTime.ToString("MMM d, yyyy")  # "Apr 22, 2026"
-$lastMonthAbbr = $last.LastWriteTime.ToString("MMM")           # "Apr"
-$lastYear      = $last.LastWriteTime.ToString("yyyy")          # "2026"
-
-# Regex patterns for the three date-range string styles used across the scripts:
-#   generate_stats.py, generate_filelist_stats.py  -> "Jan 1 to Apr 14, 2026"  (or locale month)
-#   generate_pngs.py (suptitle)                    -> "Jan 1 - Apr 14, 2026" or with en-dash
-#   generate_pngs.py (axis / category titles)      -> "Jan-Apr 2026" or with en-dash
-# Patterns use a locale-neutral month match ([A-Za-z]{2,5}\.?) so they keep working
-# on non-English Windows locales (e.g. French "avr." for April).
-$patternFull    = 'Jan 1 to [A-Za-z]{2,5}\.? \d{1,2}, \d{4}'
-$patternDash    = 'Jan 1 [–\-] [A-Za-z]{2,5}\.? \d{1,2}, \d{4}'
-$patternMonths  = 'Jan[–\-][A-Za-z]{2,5}\.? \d{4}'
-
-foreach ($relPath in $AnalyticsScripts) {
-    $fullPath = Join-Path $RepoDir $relPath
-    if (-not (Test-Path $fullPath)) { Write-Warn "Not found: $relPath"; continue }
-
-    $lines = [System.Collections.Generic.List[string]](
-        Get-Content $fullPath -Encoding UTF8)
-
-    # Find the last line containing a DATE_MAP entry (e.g. "5693-5b14060a": "2026-04-14")
-    $lastEntryIdx = -1
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^\s+"[0-9]+-[0-9a-f]+"\s*:\s*"\d{4}-\d{2}-\d{2}"') {
-            $lastEntryIdx = $i
+if ($newBuilds.Count -eq 0) {
+    Write-Info "No new builds — DATE_MAP unchanged."
+} else {
+    # Build new entry lines, with a month-comment whenever the month changes
+    $entryLines = [System.Collections.Generic.List[string]]::new()
+    $curMonth   = ""
+    foreach ($build in $newBuilds) {
+        $date  = $build.LastWriteTime.ToString("yyyy-MM-dd")
+        $month = $build.LastWriteTime.ToString("MMMM yyyy")   # "April 2026"
+        if ($month -ne $curMonth) {
+            $entryLines.Add("    # $month")
+            $curMonth = $month
         }
-    }
-    if ($lastEntryIdx -lt 0) { Write-Warn "No DATE_MAP entries in $relPath"; continue }
-
-    # Find the closing } that immediately follows the last entry
-    $closingIdx = -1
-    for ($i = $lastEntryIdx + 1; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^}') { $closingIdx = $i; break }
-    }
-    if ($closingIdx -lt 0) { Write-Warn "No closing } after DATE_MAP in $relPath"; continue }
-
-    # Splice: original[0..lastEntry] + newEntries + original[closing..end]
-    $spliced = [System.Collections.Generic.List[string]]::new()
-    $spliced.AddRange([string[]]$lines[0..$lastEntryIdx])
-    $spliced.AddRange($entryLines)
-    $spliced.AddRange([string[]]$lines[$closingIdx..($lines.Count - 1)])
-
-    # Update all three date-range string formats
-    for ($i = 0; $i -lt $spliced.Count; $i++) {
-        $spliced[$i] = $spliced[$i] -replace $patternFull,   "Jan 1 to $lastDateFull"
-        $spliced[$i] = $spliced[$i] -replace $patternDash,   "Jan 1 - $lastDateFull"
-        $spliced[$i] = $spliced[$i] -replace $patternMonths, "Jan-$lastMonthAbbr $lastYear"
+        $entryLines.Add("    `"$($build.Name)`": `"$date`",")
     }
 
-    if (-not $DryRun) {
-        Set-Content $fullPath -Value $spliced -Encoding UTF8
+    # Labels derived from the last new build
+    $last          = $newBuilds[-1]
+    $lastDateFull  = $last.LastWriteTime.ToString("MMM d, yyyy")  # "Apr 24, 2026"
+    $lastMonthAbbr = $last.LastWriteTime.ToString("MMM")           # "Apr"
+    $lastYear      = $last.LastWriteTime.ToString("yyyy")          # "2026"
+
+    # Patterns use a locale-neutral month match ([A-Za-z]{2,5}\.?) so they keep working
+    # on non-English Windows locales (e.g. French "avr." for April).
+    $patternFull   = 'Jan 1 to [A-Za-z]{2,5}\.? \d{1,2}, \d{4}'
+    $patternDash   = 'Jan 1 [–\-] [A-Za-z]{2,5}\.? \d{1,2}, \d{4}'
+    $patternMonths = 'Jan[–\-][A-Za-z]{2,5}\.? \d{4}'
+
+    foreach ($relPath in $AnalyticsScripts) {
+        $fullPath = Join-Path $RepoDir $relPath
+        if (-not (Test-Path $fullPath)) { Write-Warn "Not found: $relPath"; continue }
+
+        $lines = [System.Collections.Generic.List[string]](
+            Get-Content $fullPath -Encoding UTF8)
+
+        # Find the last line containing a DATE_MAP entry
+        $lastEntryIdx = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s+"[0-9]+-[0-9a-f]+"\s*:\s*"\d{4}-\d{2}-\d{2}"') {
+                $lastEntryIdx = $i
+            }
+        }
+        if ($lastEntryIdx -lt 0) { Write-Warn "No DATE_MAP entries in $relPath"; continue }
+
+        # Find the closing } that immediately follows the last entry
+        $closingIdx = -1
+        for ($i = $lastEntryIdx + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^}') { $closingIdx = $i; break }
+        }
+        if ($closingIdx -lt 0) { Write-Warn "No closing } after DATE_MAP in $relPath"; continue }
+
+        # Splice: original[0..lastEntry] + newEntries + original[closing..end]
+        $spliced = [System.Collections.Generic.List[string]]::new()
+        $spliced.AddRange([string[]]$lines[0..$lastEntryIdx])
+        $spliced.AddRange($entryLines)
+        $spliced.AddRange([string[]]$lines[$closingIdx..($lines.Count - 1)])
+
+        # Update date-range string formats
+        for ($i = 0; $i -lt $spliced.Count; $i++) {
+            $spliced[$i] = $spliced[$i] -replace $patternFull,   "Jan 1 to $lastDateFull"
+            $spliced[$i] = $spliced[$i] -replace $patternDash,   "Jan 1 - $lastDateFull"
+            $spliced[$i] = $spliced[$i] -replace $patternMonths, "Jan-$lastMonthAbbr $lastYear"
+        }
+
+        if (-not $DryRun) {
+            Set-Content $fullPath -Value $spliced -Encoding UTF8
+        }
+        Write-OK "$(Split-Path $fullPath -Leaf)  (+$($entryLines.Count) lines)"
     }
-    Write-OK "$(Split-Path $fullPath -Leaf)  (+$($entryLines.Count) lines)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5  Run the three analytics scripts
 # ═══════════════════════════════════════════════════════════════════════════
-Write-Step 5 "Regenerating dashboards"
+Write-Step 5 "Regenerating dashboards and updating docs/"
 
 foreach ($relPath in $AnalyticsScripts) {
     $fullPath = Join-Path $RepoDir $relPath
@@ -262,7 +283,7 @@ foreach ($relPath in $AnalyticsScripts) {
 # ═══════════════════════════════════════════════════════════════════════════
 # 6  Copy regenerated HTML to docs/
 # ═══════════════════════════════════════════════════════════════════════════
-Write-Step 6 "Updating docs/"
+Write-Info "--- Updating docs/ ---"
 
 $docsDir = Join-Path $RepoDir "docs"
 foreach ($f in @("per_test_stats.html", "filelist_stats.html")) {
@@ -275,24 +296,28 @@ foreach ($f in @("per_test_stats.html", "filelist_stats.html")) {
         Write-Warn "$f not found in StatsDir — skipped"
     }
 }
-Write-Info "PNGs already written to docs\charts\ by generate_pngs.py"
+Write-Info "Run analytics\generate_pngs.py manually to regenerate PNG charts."
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 7  Commit and push to GitHub
+# 6  Commit and push to GitHub
 # ═══════════════════════════════════════════════════════════════════════════
-Write-Step 7 "Committing to GitHub"
+Write-Step 6 "Committing to GitHub"
 
 Push-Location $RepoDir
 try {
-    $firstDate = $newBuilds[0].LastWriteTime.ToString("MMM d")
-    $lastDate  = $last.LastWriteTime.ToString("MMM d, yyyy")
-    $range     = if ($newBuilds.Count -eq 1) { $lastDate } else { "$firstDate - $lastDate" }
-    $msg       = "Update dashboards: +$($newBuilds.Count) build(s), $range"
+    if ($newBuilds.Count -gt 0) {
+        $last      = $newBuilds[-1]
+        $firstDate = $newBuilds[0].LastWriteTime.ToString("MMM d")
+        $lastDate  = $last.LastWriteTime.ToString("MMM d, yyyy")
+        $range     = if ($newBuilds.Count -eq 1) { $lastDate } else { "$firstDate - $lastDate" }
+        $msg       = "Update dashboards: +$($newBuilds.Count) build(s), $range"
+    } else {
+        $msg = "Update dashboards: backfill $($rechecks.Count) missing report(s)"
+    }
 
     if (-not $DryRun) {
         git add analytics\generate_stats.py `
                 analytics\generate_filelist_stats.py `
-                analytics\generate_pngs.py `
                 docs\
         git commit -m $msg
         git push
