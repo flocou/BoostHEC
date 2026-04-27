@@ -85,6 +85,10 @@ DATE_MAP = {
     "5732-c9277c52": "2026-04-23",
     # avril 2026
     "5742-68be1c03": "2026-04-24",
+    # avril 2026
+    "5748-786368a9": "2026-04-25",
+    "5749-786368a9": "2026-04-26",
+    "5750-786368a9": "2026-04-27",
 }
 
 
@@ -122,14 +126,18 @@ def parse_report(filepath):
     m = re.search(r'<b>(\d+) failure', content)
     data["failures"] = int(m.group(1)) if m else 0
 
-    # Per-test: extract (test_name, duration_seconds) pairs
+    # Per-test: extract (test_name, duration_seconds, error_count) triples
     test_data = {}
     rows = re.findall(r'<tr[^>]*>\s*(.*?)\s*</tr>', content, re.DOTALL)
     for row in rows:
         name_m = re.search(r'<td><b>([^<]+)</b></td>', row)
         dur_m = re.search(r'<td>(\d+) s</td>', row)
         if name_m and dur_m:
-            test_data[name_m.group(1)] = int(dur_m.group(1))
+            err_m = re.search(r'<span style="color:red;">(\d+)</span>', row)
+            test_data[name_m.group(1)] = {
+                "duration": int(dur_m.group(1)),
+                "errors":   int(err_m.group(1)) if err_m else 0,
+            }
     data["test_data"] = test_data
 
     return data
@@ -171,12 +179,13 @@ def compute_platform_data(reports):
         series = []
         for r in reports:
             if test_name in r["test_data"]:
-                series.append((r["date"], r["test_data"][test_name]))
+                td = r["test_data"][test_name]
+                series.append((r["date"], td["duration"], td["errors"]))
         test_series[test_name] = series
 
     test_stats = {}
     for test_name, series in test_series.items():
-        durations = [d for _, d in series if d > 0]
+        durations = [s[1] for s in series if s[1] > 0]
         if len(durations) >= 2:
             test_stats[test_name] = {
                 "mean": statistics.mean(durations),
@@ -218,14 +227,17 @@ def compute_platform_data(reports):
         if test_name not in test_stats:
             continue
         valid_count = sum(1 for s in series if s[1] > 0)
+        errors = [s[2] for s in series]
         charts_data[test_name] = {
-            "labels": [s[0] for s in series],
-            "data": [s[1] for s in series],
-            "mean": round(test_stats[test_name]["mean"], 1),
-            "median": round(test_stats[test_name]["median"], 1),
-            "stdev": round(test_stats[test_name]["stdev"], 1),
-            "min": test_stats[test_name]["min"],
-            "max": test_stats[test_name]["max"],
+            "labels":      [s[0] for s in series],
+            "data":        [s[1] for s in series],
+            "errors":      errors,
+            "has_errors":  any(e > 0 for e in errors),
+            "mean":        round(test_stats[test_name]["mean"], 1),
+            "median":      round(test_stats[test_name]["median"], 1),
+            "stdev":       round(test_stats[test_name]["stdev"], 1),
+            "min":         test_stats[test_name]["min"],
+            "max":         test_stats[test_name]["max"],
             "valid_count": valid_count,
         }
 
@@ -291,7 +303,7 @@ def generate_html(all_platform_data):
 <body>
 <div class="container">
     <h1>HEC Per-Test Duration Statistics</h1>
-    <p>Jan 1 to avr. 24, 2026 - All Platforms</p>
+    <p>Jan 1 to avr. 27, 2026 - All Platforms</p>
 
     <div class="tab-bar">
 """
@@ -368,6 +380,7 @@ def generate_html(all_platform_data):
                 <span>Max: <b>{s['max']}s</b></span>
                 <span>Runs: <b>{len(s['data'])}</b></span>
                 <span>Valid: <b>{s['valid_count']}</b></span>
+                {'<span style="background:#fde8e8;color:#c0392b">Max errors: <b>' + str(max(s['errors'])) + '</b></span>' if s['has_errors'] else ''}
             </div>
             <div class="chart-container">
                 <canvas id="{chart_id}" height="50"></canvas>
@@ -467,28 +480,49 @@ function createCharts(pid) {
     const lineColors = ['#3498db','#e74c3c','#2ecc71','#9b59b6','#f39c12','#1abc9c','#e67e22','#34495e'];
     pd.sorted_tests.forEach(function(testName, i) {
         const d = pd.charts_data[testName];
+        const datasets = [
+            {
+                label: testName + ' (seconds)',
+                data: d.data,
+                borderColor: lineColors[i % 8],
+                backgroundColor: 'rgba(52, 152, 219, 0.05)',
+                fill: true, tension: 0.2, pointRadius: 3, pointHoverRadius: 6,
+                yAxisID: 'y',
+            },
+            {
+                label: 'Mean (' + d.mean + 's)',
+                data: Array(d.labels.length).fill(d.mean),
+                borderColor: '#e74c3c', borderDash: [8, 4], pointRadius: 0, fill: false, borderWidth: 1.5,
+                yAxisID: 'y',
+            }
+        ];
+        const scales = {
+            y: { title: { display: true, text: 'Seconds' }, beginAtZero: true }
+        };
+        if (d.has_errors) {
+            datasets.push({
+                label: 'Errors',
+                data: d.errors,
+                type: 'bar',
+                backgroundColor: 'rgba(231, 76, 60, 0.35)',
+                borderColor: '#e74c3c',
+                borderWidth: 1,
+                yAxisID: 'y1',
+            });
+            scales.y1 = {
+                position: 'right',
+                title: { display: true, text: 'Errors' },
+                beginAtZero: true,
+                grid: { drawOnChartArea: false },
+                ticks: { precision: 0 },
+            };
+        }
         new Chart(document.getElementById(pid + '_chart_' + i), {
             type: 'line',
-            data: {
-                labels: d.labels,
-                datasets: [
-                    {
-                        label: testName + ' (seconds)',
-                        data: d.data,
-                        borderColor: lineColors[i % 8],
-                        backgroundColor: 'rgba(52, 152, 219, 0.05)',
-                        fill: true, tension: 0.2, pointRadius: 3, pointHoverRadius: 6,
-                    },
-                    {
-                        label: 'Mean (' + d.mean + 's)',
-                        data: Array(d.labels.length).fill(d.mean),
-                        borderColor: '#e74c3c', borderDash: [8, 4], pointRadius: 0, fill: false, borderWidth: 1.5,
-                    }
-                ]
-            },
+            data: { labels: d.labels, datasets: datasets },
             options: {
                 responsive: true,
-                scales: { y: { title: { display: true, text: 'Seconds' }, beginAtZero: true } },
+                scales: scales,
                 plugins: { legend: { display: true, position: 'top' } }
             }
         });
